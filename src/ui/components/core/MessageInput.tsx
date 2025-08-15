@@ -26,6 +26,56 @@ export default function MessageInput({
   const isSlashCommand = value.startsWith('/');
   const showSlashCommands = isSlashCommand;
 
+  // Helpers for navigation/deletion boundaries
+  const moveToPrevWord = () => {
+    let newPos = cursorPosition;
+    // Skip any whitespace to the left
+    while (newPos > 0 && /\s/.test(value[newPos - 1])) newPos--;
+    // Skip non-whitespace to word start
+    while (newPos > 0 && !/\s/.test(value[newPos - 1])) newPos--;
+    setCursorPosition(newPos);
+  };
+
+  const moveToNextWord = () => {
+    let newPos = cursorPosition;
+    // Skip non-whitespace to end of current word
+    while (newPos < value.length && !/\s/.test(value[newPos])) newPos++;
+    // Skip whitespace to start of next word
+    while (newPos < value.length && /\s/.test(value[newPos])) newPos++;
+    setCursorPosition(newPos);
+  };
+
+  const moveLineStart = () => {
+    const before = value.substring(0, cursorPosition);
+    const parts = before.split('\n');
+    const currentLineIndex = parts.length - 1;
+    const start = parts.slice(0, -1).join('\n').length + (currentLineIndex > 0 ? 1 : 0);
+    setCursorPosition(start);
+  };
+
+  const moveLineEnd = () => {
+    const lines = value.split('\n');
+    const before = value.substring(0, cursorPosition);
+    const currentLineIndex = before.split('\n').length - 1;
+    const lineStart = before.split('\n').slice(0, -1).join('\n').length + (currentLineIndex > 0 ? 1 : 0);
+    const end = lineStart + lines[currentLineIndex].length;
+    setCursorPosition(end);
+  };
+
+  const deleteNextWord = () => {
+    let endPos = cursorPosition;
+    // Skip any whitespace after cursor
+    while (endPos < value.length && /\s/.test(value[endPos])) endPos++;
+    // Skip non-whitespace to word end
+    while (endPos < value.length && !/\s/.test(value[endPos])) endPos++;
+    // Skip any trailing whitespace
+    while (endPos < value.length && /\s/.test(value[endPos])) endPos++;
+    if (endPos > cursorPosition) {
+      const newValue = value.slice(0, cursorPosition) + value.slice(endPos);
+      onChange(newValue);
+    }
+  };
+
   // Keep cursor position in bounds and reset to end when value is cleared
   useEffect(() => {
     if (value.length === 0) {
@@ -39,6 +89,33 @@ export default function MessageInput({
   }, [value]);
 
   useInput((input, key) => {
+    // Normalize common Windows/xterm escape sequences first
+    // Ctrl+Left: ESC[1;5D or ESC[5D
+    if (input === '\u001b[1;5D' || input === '\u001b[5D') {
+      moveToPrevWord();
+      return;
+    }
+    // Ctrl+Right: ESC[1;5C or ESC[5C
+    if (input === '\u001b[1;5C' || input === '\u001b[5C') {
+      moveToNextWord();
+      return;
+    }
+    // Home: ESC[H or ESC[1~ or ESCOH
+    if (input === '\u001b[H' || input === '\u001b[1~' || input === '\u001bOH') {
+      moveLineStart();
+      return;
+    }
+    // End: ESC[F or ESC[4~ or ESCOF
+    if (input === '\u001b[F' || input === '\u001b[4~' || input === '\u001bOF') {
+      moveLineEnd();
+      return;
+    }
+    // Ctrl+Delete: ESC[3;5~
+    if (input === '\u001b[3;5~') {
+      deleteNextWord();
+      return;
+    }
+
     if (key.return) {
       // Shift+Enter should add a new line, Enter should send
       if (key.shift) {
@@ -155,17 +232,7 @@ export default function MessageInput({
 
     if (key.leftArrow) {
       if (key.ctrl) {
-        // Move to previous word boundary
-        let newPos = cursorPosition;
-        // Skip any whitespace to the left
-        while (newPos > 0 && /\s/.test(value[newPos - 1])) {
-          newPos--;
-        }
-        // Skip non-whitespace characters to find word start
-        while (newPos > 0 && !/\s/.test(value[newPos - 1])) {
-          newPos--;
-        }
-        setCursorPosition(newPos);
+        moveToPrevWord();
       } else {
         setCursorPosition(prev => Math.max(0, prev - 1));
       }
@@ -174,45 +241,13 @@ export default function MessageInput({
 
     if (key.rightArrow) {
       if (key.ctrl) {
-        // Move to next word boundary
-        let newPos = cursorPosition;
-        // Skip non-whitespace characters to the right
-        while (newPos < value.length && !/\s/.test(value[newPos])) {
-          newPos++;
-        }
-        // Skip any whitespace to find next word start
-        while (newPos < value.length && /\s/.test(value[newPos])) {
-          newPos++;
-        }
-        setCursorPosition(newPos);
+        moveToNextWord();
       } else {
         setCursorPosition(prev => Math.min(value.length, prev + 1));
       }
       return;
     }
 
-    // Home key support - move to beginning of line or text
-    if (input === '\u001bOH' || input === '\u001b[H') {
-      setCursorPosition(0);
-      return;
-    }
-
-    // End key support - move to end of line or text
-    if (input === '\u001bOF' || input === '\u001b[F') {
-      setCursorPosition(value.length);
-      return;
-    }
-
-    // Ctrl+A and Ctrl+E as alternative shortcuts for Home/End
-    if (key.ctrl && input === 'a') {
-      setCursorPosition(0);
-      return;
-    }
-
-    if (key.ctrl && input === 'e') {
-      setCursorPosition(value.length);
-      return;
-    }
 
     if (key.ctrl && input === 'k') {
       // Delete from cursor to end of line
