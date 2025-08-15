@@ -349,37 +349,40 @@ export default function MessageInput({
 
   return (
     <Box flexDirection="column">
-      <Box>
-        <Text color="cyan" bold>{'>'} </Text>
-        <Box flexGrow={1}>
-          {isPlaceholder ? (
-            <Text color="gray">
-              <Text backgroundColor="cyan" color="white"> </Text>
-              {placeholder}
-            </Text>
-          ) : (
-            value.split('\n').map((line, lineIndex) => {
-              const isCurrentLine = lineIndex === cursorPos.line;
-              
-              if (!isCurrentLine) {
-                // Not the current line, just display it
-                return <Text color="gray" key={lineIndex}>{line}</Text>;
-              }
-              
-              // Current line, show cursor
-              return (
-                <Text color="gray" key={lineIndex}>
+      {isPlaceholder ? (
+        <Box>
+          <Text color="cyan" bold>{'>'} </Text>
+          <Text color="gray">
+            <Text backgroundColor="cyan" color="white"> </Text>
+            {placeholder}
+          </Text>
+        </Box>
+      ) : (
+        // Render each line on its own row with a continuation marker
+        value.split('\n').map((line, lineIndex) => {
+          const isCurrentLine = lineIndex === cursorPos.line;
+          return (
+            <Box key={lineIndex}>
+              <Text color={lineIndex === 0 ? 'cyan' : 'gray'} bold={lineIndex === 0}>
+                {lineIndex === 0 ? '>' : '…'}
+              </Text>
+              <Text> </Text>
+              {isCurrentLine ? (
+                <Text color="gray">
                   {line.slice(0, cursorPos.column)}
                   <Text backgroundColor="cyan" color="white">
                     {cursorPos.column < line.length ? line[cursorPos.column] : ' '}
                   </Text>
                   {line.slice(cursorPos.column + 1)}
                 </Text>
-              );
-            })
-          )}
-        </Box>
-      </Box>
+              ) : (
+                <Text color="gray">{line}</Text>
+              )}
+            </Box>
+          );
+        })
+      )}
+
       {showSlashCommands && (
         <SlashCommandSuggestions 
           input={value} 
