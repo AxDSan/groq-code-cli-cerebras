@@ -1,7 +1,10 @@
 import { useState, useCallback, useRef } from 'react';
 import { Agent } from '../../core/agent.js';
 import { DANGEROUS_TOOLS, APPROVAL_REQUIRED_TOOLS } from '../../tools/tool-schemas.js';
+import { parseApiError, formatErrorForDisplay } from '../../utils/errorUtils.js';
+import { ConfigManager } from '../../utils/local-settings.js';
 
+const configManager = new ConfigManager();
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool' | 'tool_execution';
@@ -240,26 +243,9 @@ export function useAgent(
         return;
       }
       
-      let errorMessage = 'Unknown error occurred';
-      
-      if (error instanceof Error) {
-        // Check if it's an API error with more details
-        if ('status' in error && 'error' in error) {
-          const apiError = error as any;
-          if (apiError.error?.error?.message) {
-            errorMessage = `API Error (${apiError.status}): ${apiError.error.error.message}`;
-            if (apiError.error.error.code) {
-              errorMessage += ` (Code: ${apiError.error.error.code})`;
-            }
-          } else {
-            errorMessage = `API Error (${apiError.status}): ${error.message}`;
-          }
-        } else {
-          errorMessage = `Error: ${error.message}`;
-        }
-      } else {
-        errorMessage = `Error: ${String(error)}`;
-      }
+      // Parse and format the error for display
+      const parsedError = parseApiError(error);
+      const errorMessage = formatErrorForDisplay(parsedError);
       
       addMessage({
         role: 'system',
@@ -291,7 +277,8 @@ export function useAgent(
   }, [pendingMaxIterations]);
 
   const setApiKey = useCallback((apiKey: string) => {
-    agent.setApiKey(apiKey);
+    const provider = configManager.getProvider() || 'groq';
+    agent.setApiKey(provider, apiKey);
   }, [agent]);
 
   const toggleAutoApprove = useCallback(() => {

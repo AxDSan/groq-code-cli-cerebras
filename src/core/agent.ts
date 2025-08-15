@@ -1,8 +1,9 @@
-import Groq from 'groq-sdk';
 import { executeTool } from '../tools/tools.js';
+import { getAIClient } from './provider.js';
 import { validateReadBeforeEdit, getReadBeforeEditError } from '../tools/validators.js';
 import { ALL_TOOL_SCHEMAS, DANGEROUS_TOOLS, APPROVAL_REQUIRED_TOOLS } from '../tools/tool-schemas.js';
 import { ConfigManager } from '../utils/local-settings.js';
+import { parseApiError, shouldRetryError, getRetryDelay } from '../utils/errorUtils.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -14,7 +15,7 @@ interface Message {
 }
 
 export class Agent {
-  private client: Groq | null = null;
+  private client: any | null = null;
   private messages: Message[] = [];
   private apiKey: string | null = null;
   private model: string;
@@ -78,7 +79,7 @@ export class Agent {
   }
 
   private buildDefaultSystemMessage(): string {
-    return `You are a coding assistant powered by ${this.model} on Groq. Tools are available to you. Use tools to complete tasks.
+    return `You are a coding assistant powered by ${this.model}. Tools are available to you. Use tools to complete tasks.
 
 CRITICAL: For ANY implementation request (building apps, creating components, writing code), you MUST use tools to create actual files. NEVER provide text-only responses for coding tasks that require implementation.
 
@@ -87,7 +88,16 @@ Use tools to:
 - Create, edit, and manage files (create_file, edit_file, list_files, read_file, delete_file)
 - Execute commands (execute_command)
 - Search for information (search_files)
+- Plan and execute complex tasks (create_tasks, update_tasks, plan_tasks)
 - Help you understand the codebase before answering the user's question
+
+TASK PLANNING AND EXECUTION:
+When given a complex request, you should:
+1. Use the plan_tasks tool to automatically decompose the request into a structured task list
+2. Review the generated tasks and modify them if needed using create_tasks
+3. Execute tasks one by one using the appropriate tools
+4. Update task statuses using update_tasks as you progress
+5. Continue until all tasks are completed
 
 IMPLEMENTATION TASK RULES:
 - When asked to "build", "create", "implement", or "make" anything: USE TOOLS TO CREATE FILES
@@ -127,7 +137,7 @@ Be direct and efficient.
 
 Don't generate markdown tables.
 
-When asked about your identity, you should identify yourself as a coding assistant running on the ${this.model} model via Groq.`;
+When asked about your identity, you should identify yourself as a coding assistant running on the ${this.model} model.`;
   }
 
 
@@ -149,21 +159,21 @@ When asked about your identity, you should identify yourself as a coding assista
     this.onApiUsage = callbacks.onApiUsage;
   }
 
-  public setApiKey(apiKey: string): void {
+  public setApiKey(provider: string, apiKey: string): void {
     debugLog('Setting API key in agent...');
     debugLog('API key provided:', apiKey ? `${apiKey.substring(0, 8)}...` : 'empty');
     this.apiKey = apiKey;
-    this.client = new Groq({ apiKey });
-    debugLog('Groq client initialized with provided API key');
+    this.client = getAIClient(provider, apiKey);
+    debugLog(`${provider} client initialized with provided API key`);
   }
 
-  public saveApiKey(apiKey: string): void {
-    this.configManager.setApiKey(apiKey);
-    this.setApiKey(apiKey);
+  public saveApiKey(provider: string, apiKey: string): void {
+    this.configManager.setApiKey(provider, apiKey);
+    this.setApiKey(provider, apiKey);
   }
 
-  public clearApiKey(): void {
-    this.configManager.clearApiKey();
+  public clearApiKey(provider: string): void {
+    this.configManager.clearApiKey(provider);
     this.apiKey = null;
     this.client = null;
   }
@@ -217,32 +227,35 @@ When asked about your identity, you should identify yourself as a coding assista
     
     // Check API key on first message send
     if (!this.client) {
-      debugLog('Initializing Groq client...');
+      const provider = this.configManager.getProvider() || 'groq';
+      debugLog(`Initializing ${provider} client...`);
       // Try environment variable first
       const envApiKey = process.env.GROQ_API_KEY;
       if (envApiKey) {
         debugLog('Using API key from environment variable');
-        this.setApiKey(envApiKey);
+        this.setApiKey(provider, envApiKey);
       } else {
         // Try config file
         debugLog('Environment variable GROQ_API_KEY not found, checking config file');
-        const configApiKey = this.configManager.getApiKey();
+        const configApiKey = this.configManager.getApiKey(provider);
         if (configApiKey) {
           debugLog('Using API key from config file');
-          this.setApiKey(configApiKey);
+          this.setApiKey(provider, configApiKey);
         } else {
           debugLog('No API key found anywhere');
-          throw new Error('No API key available. Please use /login to set your Groq API key.');
+          throw new Error('No API key available. Please use /login to set your API key.');
         }
       }
-      debugLog('Groq client initialized successfully');
+      debugLog('Client initialized successfully');
     }
 
     // Add user message
     this.messages.push({ role: 'user', content: userInput });
 
-    const maxIterations = 50;
+    const isQwenModel = this.model.includes('qwen');
+    const maxIterations = isQwenModel ? 75 : 50; // Lower limit for qwen models
     let iteration = 0;
+    let consecutiveToolCalls = 0; // Track consecutive tool calls
 
     while (true) { // Outer loop for iteration reset
       while (iteration < maxIterations) {
@@ -276,7 +289,8 @@ When asked about your identity, you should identify yourself as a coding assista
           
           // Log equivalent curl command
           this.requestCount++;
-          const curlCommand = generateCurlCommand(this.apiKey!, requestBody, this.requestCount);
+          const provider = this.configManager.getProvider() || 'groq';
+          const curlCommand = generateCurlCommand(this.apiKey!, requestBody, this.requestCount, provider);
           if (curlCommand) {
             debugLog('Equivalent curl command:', curlCommand);
           }
@@ -370,10 +384,27 @@ When asked about your identity, you should identify yourself as a coding assista
 
             // Continue loop to get model response to tool results
             iteration++;
+            consecutiveToolCalls++;
+            
+            // Check if we're stuck in a tool loop (qwen model specific)
+            if (isQwenModel && consecutiveToolCalls > 8) {
+              debugLog('Qwen model stuck in tool loop, forcing final response');
+              
+              // Add a system message to force completion
+              this.messages.push({
+                role: 'system',
+                content: 'You have executed multiple tools successfully. Now provide a final summary response to the user without calling any more tools.'
+              });
+              
+              // Reset counter to allow one more iteration for final response
+              consecutiveToolCalls = 0;
+            }
+            
             continue;
           }
 
           // No tool calls, this is the final response
+          consecutiveToolCalls = 0; // Reset counter when we get a non-tool response
           const content = message.content || '';
           debugLog('Final response - no tool calls detected');
           debugLog('Final content length:', content.length);
@@ -416,43 +447,41 @@ When asked about your identity, you should identify yourself as a coding assista
             stack: error instanceof Error ? error.stack : 'No stack available'
           });
           
-          // Add API error as context message instead of terminating chat
-          let errorMessage = 'Unknown error occurred';
-          let is401Error = false;
+          // Parse the error to determine if we should retry
+          const parsedError = parseApiError(error);
           
-          if (error instanceof Error) {
-            // Check if it's an API error with more details
-            if ('status' in error && 'error' in error) {
-              const apiError = error as any;
-              is401Error = apiError.status === 401;
-              if (apiError.error?.error?.message) {
-                errorMessage = `API Error (${apiError.status}): ${apiError.error.error.message}`;
-                if (apiError.error.error.code) {
-                  errorMessage += ` (Code: ${apiError.error.error.code})`;
-                }
-              } else {
-                errorMessage = `API Error (${apiError.status}): ${error.message}`;
-              }
-            } else {
-              errorMessage = `Error: ${error.message}`;
-            }
-          } else {
-            errorMessage = `Error: ${String(error)}`;
+          // Don't retry certain errors
+          if (parsedError.type === 'auth' || parsedError.type === 'token_limit') {
+            // These errors should be shown to the user and stop processing
+            throw error;
           }
           
-          // For 401 errors (invalid API key), don't retry - terminate immediately
-          if (is401Error) {
-            throw new Error(`${errorMessage}. Please check your API key and use /login to set a valid key.`);
+          // For rate limit errors, stop adding to conversation history to prevent infinite loop
+          if (parsedError.type === 'rate_limit') {
+            debugLog('Rate limit error detected, stopping retry loop');
+            // Remove any previous error messages from the conversation to prevent accumulation
+            const lastMessage = this.messages[this.messages.length - 1];
+            if (lastMessage?.role === 'system' && lastMessage.content.includes('Previous API request failed')) {
+              this.messages.pop();
+            }
+            // Throw the error to be handled by the UI
+            throw error;
+          }
+          
+          // For other errors, try to recover but with limits
+          iteration++;
+          
+          // If we've had too many errors, stop trying
+          if (iteration >= maxIterations) {
+            throw error;
           }
           
           // Add error context to conversation for model to see and potentially recover
           this.messages.push({
             role: 'system',
-            content: `Previous API request failed with error: ${errorMessage}. Please try a different approach or ask the user for clarification.`
+            content: `Previous API request failed. Please try a different approach or ask the user for clarification.`
           });
           
-          // Continue conversation loop to let model attempt recovery
-          iteration++;
           continue;
         }
       }
@@ -596,7 +625,7 @@ function debugLog(message: string, data?: any) {
   fs.appendFileSync(DEBUG_LOG_FILE, logEntry);
 }
 
-function generateCurlCommand(apiKey: string, requestBody: any, requestCount: number): string {
+function generateCurlCommand(apiKey: string, requestBody: any, requestCount: number, provider: string): string {
   if (!debugEnabled) return '';
   
   const maskedApiKey = `${apiKey.substring(0, 8)}...${apiKey.substring(apiKey.length - 8)}`;
@@ -606,7 +635,9 @@ function generateCurlCommand(apiKey: string, requestBody: any, requestCount: num
   const jsonFilePath = path.join(process.cwd(), jsonFileName);
   fs.writeFileSync(jsonFilePath, JSON.stringify(requestBody, null, 2));
   
-  const curlCmd = `curl -X POST "https://api.groq.com/openai/v1/chat/completions" \\
+  const url = provider === 'cerebras' ? 'https://api.cerebras.com/v1/chat/completions' : 'https://api.groq.com/openai/v1/chat/completions';
+
+  const curlCmd = `curl -X POST "${url}" \\
   -H "Authorization: Bearer ${maskedApiKey}" \\
   -H "Content-Type: application/json" \\
   -d @${jsonFileName}`;
