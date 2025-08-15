@@ -29,7 +29,7 @@ const PROVIDERS = [
     { id: 'meta-llama/llama-3.1-405b-instruct', name: 'LLaMA 3.1 405B', description: 'Meta\'s most capable model' },
     { id: 'qwen/qwen-2.5-coder-32b-instruct', name: 'Qwen 2.5 Coder 32B', description: 'Alibaba\'s latest coding-focused model' },
     { id: 'qwen/qwen-2.5-72b-instruct', name: 'Qwen 2.5 72B', description: 'Alibaba\'s latest large language model' },
-    { id: 'qwen/qwen3-coder:nitro', name: 'Qwen 3 Coder (Cerebras)', description: 'Alibaba\'s best coding model' },
+    { id: 'qwen/qwen3-coder', name: 'Qwen 3 Coder', description: 'Alibaba\'s best coding model' },
   ]},
 ];
 

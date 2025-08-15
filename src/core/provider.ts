@@ -64,6 +64,20 @@ export const getAIClient = (provider: string, apiKey: string) => {
         chat: {
           completions: {
             create: async (params: any, options?: any) => {
+              // Enforce specific upstream provider for qwen3-coder* models with no fallback
+              try {
+                const modelId = typeof params?.model === 'string' ? params.model : '';
+                if (/qwen3-coder/i.test(modelId)) {
+                  // Inject vendor-specific constraint
+                  params = {
+                    ...params,
+                    provider: {
+                      only: ['chutes'],
+                    },
+                  };
+                }
+              } catch {}
+
               const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
                 method: 'POST',
                 headers: {
@@ -77,8 +91,14 @@ export const getAIClient = (provider: string, apiKey: string) => {
               });
               
               if (!response.ok) {
-                const error = await response.json();
-                throw new Error(`OpenRouter API error: ${JSON.stringify(error)}`);
+                // Hard fail: surface OpenRouter error directly (no fallback)
+                let error: any = undefined;
+                try {
+                  error = await response.json();
+                } catch {
+                  // ignore json parse errors
+                }
+                throw new Error(`OpenRouter API error: ${error ? JSON.stringify(error) : response.status + ' ' + response.statusText}`);
               }
               
               return await response.json();
