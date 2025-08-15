@@ -191,20 +191,85 @@ export default function MessageInput({
       return;
     }
 
-    if (key.home) {
-      // Move to beginning of line
+    // Home key support - move to beginning of line or text
+    if (input === '\u001bOH' || input === '\u001b[H') {
       setCursorPosition(0);
       return;
     }
 
-    if (key.end) {
-      // Move to end of line
+    // End key support - move to end of line or text
+    if (input === '\u001bOF' || input === '\u001b[F') {
       setCursorPosition(value.length);
       return;
     }
 
+    // Ctrl+A and Ctrl+E as alternative shortcuts for Home/End
+    if (key.ctrl && input === 'a') {
+      setCursorPosition(0);
+      return;
+    }
+
+    if (key.ctrl && input === 'e') {
+      setCursorPosition(value.length);
+      return;
+    }
+
+    if (key.ctrl && input === 'k') {
+      // Delete from cursor to end of line
+      const lines = value.split('\n');
+      const currentLineText = value.substring(0, cursorPosition).split('\n');
+      const currentLineIndex = currentLineText.length - 1;
+      const currentLineStart = currentLineText.slice(0, -1).join('\n').length + (currentLineIndex > 0 ? 1 : 0);
+      const currentLine = lines[currentLineIndex];
+      const currentColumn = currentLineText[currentLineIndex].length;
+      const textToDelete = currentLine.slice(currentColumn);
+      
+      // Only delete if there's text to delete
+      if (textToDelete.length > 0) {
+        const newValue = value.slice(0, cursorPosition) + value.slice(cursorPosition + textToDelete.length);
+        onChange(newValue);
+      }
+      return;
+    }
+
     if (key.backspace || key.delete) {
-      if (cursorPosition > 0) {
+      if (key.ctrl && key.delete) {
+        // Ctrl+Delete: Delete next word
+        let endPos = cursorPosition;
+        // Skip any whitespace after cursor
+        while (endPos < value.length && /\s/.test(value[endPos])) {
+          endPos++;
+        }
+        // Skip non-whitespace characters to find word end
+        while (endPos < value.length && !/\s/.test(value[endPos])) {
+          endPos++;
+        }
+        // Skip any trailing whitespace after the word
+        while (endPos < value.length && /\s/.test(value[endPos])) {
+          endPos++;
+        }
+        const newValue = value.slice(0, cursorPosition) + value.slice(endPos);
+        onChange(newValue);
+      } else if (key.ctrl && key.backspace) {
+        // Ctrl+Backspace: Delete previous word
+        let startPos = cursorPosition;
+        // Skip any whitespace before cursor
+        while (startPos > 0 && /\s/.test(value[startPos - 1])) {
+          startPos--;
+        }
+        // Skip non-whitespace characters to find word start
+        while (startPos > 0 && !/\s/.test(value[startPos - 1])) {
+          startPos--;
+        }
+        const newValue = value.slice(0, startPos) + value.slice(cursorPosition);
+        onChange(newValue);
+        setCursorPosition(startPos);
+      } else if (key.delete && cursorPosition < value.length) {
+        // Regular Delete: Delete character after cursor
+        const newValue = value.slice(0, cursorPosition) + value.slice(cursorPosition + 1);
+        onChange(newValue);
+      } else if (key.backspace && cursorPosition > 0) {
+        // Regular Backspace: Delete character before cursor
         const newValue = value.slice(0, cursorPosition - 1) + value.slice(cursorPosition);
         onChange(newValue);
         setCursorPosition(prev => prev - 1);
