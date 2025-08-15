@@ -91,6 +91,124 @@ export default function MessageInput({
   }, [value]);
 
   useInput((input, key) => {
+    // Minimal CSI/SS3 parser to handle variable-length escape sequences and modifiers
+    const parseAndHandleCSI = (buf: string): { consumed: number } => {
+      // CSI sequences start with ESC [
+      if (!(buf.startsWith('\u001b['))) return { consumed: 0 };
+      // Find the final byte (ASCII 0x40-0x7E). Common finals: ~ A B C D H F
+      // We accumulate until we see one.
+      for (let i = 2; i < buf.length; i++) {
+        const ch = buf[i];
+        const code = ch.charCodeAt(0);
+        if (code >= 0x40 && code <= 0x7e) {
+          const full = buf.slice(0, i + 1);
+          // Example forms:
+          // ESC [ C            -> Right
+          // ESC [ 1 ; 5 D     -> Ctrl+Left (D)
+          // ESC [ 3 ~         -> Delete
+          // ESC [ 3 ; 5 ~     -> Ctrl+Delete
+          const body = full.slice(2, -1); // between '[' and final
+          const final = full.slice(-1);
+          const parts = body.length ? body.split(';') : [];
+          const nums = parts.map(p => parseInt(p, 10)).filter(n => !Number.isNaN(n));
+          const modifier = nums.length >= 2 ? nums[1] : (nums.length === 1 && (final === 'C' || final === 'D' || final === 'H' || final === 'F') ? 1 : 0);
+          const isCtrl = modifier === 5; // 5 = Ctrl, 3 = Alt, 2 = Shift
+          const isAlt = modifier === 3;
+
+          switch (final) {
+            case 'C': // Right
+              if (isCtrl || isAlt) moveToNextWord(); else setCursorPosition(prev => Math.min(value.length, prev + 1));
+              break;
+            case 'D': // Left
+              if (isCtrl || isAlt) moveToPrevWord(); else setCursorPosition(prev => Math.max(0, prev - 1));
+              break;
+            case 'H': // Home
+              moveLineStart();
+              break;
+            case 'F': // End
+              moveLineEnd();
+              break;
+            case '~': {
+              // Tilde-coded sequences, first param indicates key
+              const keycode = nums[0];
+              if (keycode === 3) { // Delete
+                if (modifier === 5) {
+                  // Ctrl+Delete
+                  deleteNextWord();
+                } else if (cursorPosition < value.length) {
+                  const newValue = value.slice(0, cursorPosition) + value.slice(cursorPosition + 1);
+                  onChange(newValue);
+                }
+              } else if (keycode === 1 || keycode === 7) {
+                // Home variants
+                moveLineStart();
+              } else if (keycode === 4 || keycode === 8) {
+                // End variants
+                moveLineEnd();
+              }
+              break;
+            }
+          }
+          return { consumed: full.length };
+        }
+      }
+      // Not complete yet
+      return { consumed: 0 };
+    };
+
+    const parseAndHandleSS3 = (buf: string): { consumed: number } => {
+      // SS3 sequences start with ESC O (often Home/End)
+      if (!(buf.startsWith('\u001bO'))) return { consumed: 0 };
+      if (buf.length < 3) return { consumed: 0 };
+      const final = buf[2];
+      if (final === 'H') moveLineStart();
+      else if (final === 'F') moveLineEnd();
+      else return { consumed: 0 };
+      return { consumed: 3 };
+    };
+
+    // Process escape buffer + new input as a stream
+    let stream = escBuffer + input;
+    let consumedTotal = 0;
+    while (stream.startsWith('\u001b')) {
+      // Try SS3 first
+      const ss3 = parseAndHandleSS3(stream);
+      if (ss3.consumed > 0) {
+        stream = stream.slice(ss3.consumed);
+        consumedTotal += ss3.consumed;
+        continue;
+      }
+      // Then CSI
+      const csi = parseAndHandleCSI(stream);
+      if (csi.consumed > 0) {
+        stream = stream.slice(csi.consumed);
+        consumedTotal += csi.consumed;
+        continue;
+      }
+      // Wait for more bytes for an incomplete ESC sequence
+      break;
+    }
+
+    // Whatever remains that starts with ESC but incomplete, keep buffered
+    const firstEsc = stream.indexOf('\u001b');
+    if (firstEsc === 0) {
+      // Entire remaining stream is partial ESC sequence
+      setEscBuffer(stream);
+      // Also, process any leading non-ESC portion we consumed earlier (none here)
+      if (consumedTotal > 0) return;
+    } else {
+      // No leading ESC; store any trailing ESC fragment only
+      if (firstEsc > 0) {
+        const before = stream.slice(0, firstEsc);
+        stream = stream.slice(firstEsc);
+        setEscBuffer(stream);
+        // Process 'before' as normal text below
+        input = before; // reassign to process as plain characters
+      } else {
+        // No ESC at all leftover
+        setEscBuffer('');
+      }
+    }
     // Helper: consume known escape sequences from a buffer
     const tryHandleEscSeq = (buf: string): { handled: boolean; remainder: string } => {
       // Map of exact sequences to handlers
@@ -236,6 +354,17 @@ export default function MessageInput({
       // Otherwise clear buffer and continue processing
       setEscBuffer('');
     }
+    // If we still have raw known sequences (rare), handle direct matches and Meta-b/f
+    // Alt+f / Alt+b are sent as ESC f / ESC b by some terminals for word navigation
+    if (input === '\u001bf') {
+      moveToNextWord();
+      return;
+    }
+    if (input === '\u001bb') {
+      moveToPrevWord();
+      return;
+    }
+
     // Ctrl+Left: ESC[1;5D or ESC[5D
     if (input === '\u001b[1;5D' || input === '\u001b[5D') {
       moveToPrevWord();
@@ -379,6 +508,19 @@ export default function MessageInput({
     }
     if (anyKey.end) {
       moveLineEnd();
+      return;
+    }
+
+    // Treat Backspace with Ctrl or Alt as delete-previous-word (for terminals that don't emit distinct codes)
+    if ((key.backspace && (key.ctrl || key.meta))) {
+      let startPos = cursorPosition;
+      while (startPos > 0 && /\s/.test(value[startPos - 1])) startPos--;
+      while (startPos > 0 && !/\s/.test(value[startPos - 1])) startPos--;
+      const newValue = value.slice(0, startPos) + value.slice(cursorPosition);
+      onChange(newValue);
+      setCursorPosition(startPos);
+      setSelectedCommandIndex(0);
+      setHistoryIndex(-1);
       return;
     }
 
