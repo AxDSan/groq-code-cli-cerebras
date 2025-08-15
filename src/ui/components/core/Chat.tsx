@@ -4,6 +4,7 @@ import { Agent } from '../../../core/agent.js';
 import { useAgent } from '../../hooks/useAgent.js';
 import { useTokenMetrics } from '../../hooks/useTokenMetrics.js';
 import MessageHistory from './MessageHistory.js';
+import OptimizedMessageHistory from './OptimizedMessageHistory.js';
 import MessageInput from './MessageInput.js';
 import TokenMetrics from '../display/TokenMetrics.js';
 import PendingToolApproval from '../input-overlays/PendingToolApproval.js';
@@ -169,7 +170,7 @@ export default function Chat({ agent }: ChatProps) {
     <Box flexDirection="column" height="100%">
       {/* Chat messages area */}
       <Box flexGrow={1} flexDirection="column" paddingX={1}>
-        <MessageHistory messages={messages} showReasoning={showReasoning} />
+        <OptimizedMessageHistory messages={messages} showReasoning={showReasoning} />
       </Box>
 
       {/* Token metrics */}
