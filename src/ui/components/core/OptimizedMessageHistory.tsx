@@ -114,12 +114,12 @@ const MemoizedMessage = React.memo(({
   }
 });
 
-export default function OptimizedMessageHistory({ messages, showReasoning = true }: OptimizedMessageHistoryProps) {
+function OptimizedMessageHistory({ messages, showReasoning = true }: OptimizedMessageHistoryProps) {
   // Memoize the rendered messages to prevent unnecessary re-renders
   const renderedMessages = useMemo(() => {
     return messages.map((message, index) => (
       <MemoizedMessage 
-        key={`${message.id}-${index}`}
+        key={message.id ?? `msg-${index}`}
         message={message} 
         showReasoning={showReasoning} 
       />
@@ -143,3 +143,28 @@ export default function OptimizedMessageHistory({ messages, showReasoning = true
     </Box>
   );
 }
+
+// Prevent re-render when unrelated state (like timers/metrics) updates
+export default React.memo(OptimizedMessageHistory, (prev, next) => {
+  if (prev.showReasoning !== next.showReasoning) return false;
+  const a = prev.messages;
+  const b = next.messages;
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const ma: any = a[i] as any;
+    const mb: any = b[i] as any;
+    // Compare id + content + reasoning to detect actual visual changes
+    if (ma.id !== mb.id) return false;
+    if (ma.content !== mb.content) return false;
+    if (ma.reasoning !== mb.reasoning) return false;
+    // If there is a toolExecution object, shallow compare a few stable fields
+    if (!!ma.toolExecution !== !!mb.toolExecution) return false;
+    if (ma.toolExecution && mb.toolExecution) {
+      if (ma.toolExecution.name !== mb.toolExecution.name) return false;
+      if (JSON.stringify(ma.toolExecution.args) !== JSON.stringify(mb.toolExecution.args)) return false;
+      if (ma.toolExecution.status !== mb.toolExecution.status) return false;
+    }
+  }
+  return true;
+});

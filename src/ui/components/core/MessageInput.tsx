@@ -40,6 +40,17 @@ export default function MessageInput({
 
   useInput((input, key) => {
     if (key.return) {
+      // Shift+Enter should add a new line, Enter should send
+      if (key.shift) {
+        // Add a new line
+        const newValue = value.slice(0, cursorPosition) + '\n' + value.slice(cursorPosition);
+        onChange(newValue);
+        setCursorPosition(prev => prev + 1);
+        setSelectedCommandIndex(0);
+        setHistoryIndex(-1);
+        return;
+      }
+      
       if (isSlashCommand) {
         // Auto-complete to selected command
         const searchTerm = value.slice(1).toLowerCase();
@@ -73,7 +84,23 @@ export default function MessageInput({
           setCursorPosition(historicalMessage.length);
         }
       } else {
-        setCursorPosition(0);
+        // For multi-line text, move to previous line at same column
+        const lines = value.substring(0, cursorPosition).split('\n');
+        if (lines.length > 1) {
+          // We're not on the first line, move to previous line
+          const currentLineIndex = lines.length - 1;
+          const currentColumn = lines[currentLineIndex].length;
+          const prevLineLength = lines[currentLineIndex - 1].length;
+          const newColumn = Math.min(currentColumn, prevLineLength);
+          
+          // Calculate new cursor position
+          let newPosition = cursorPosition - lines[currentLineIndex].length - 1; // -1 for newline
+          newPosition = newPosition - (prevLineLength - newColumn);
+          setCursorPosition(newPosition);
+        } else {
+          // Already on first line, move to beginning
+          setCursorPosition(0);
+        }
       }
       return;
     }
@@ -101,18 +128,78 @@ export default function MessageInput({
           setCursorPosition(draftMessage.length);
         }
       } else {
-        setCursorPosition(value.length);
+        // For multi-line text, move to next line at same column
+        const allLines = value.split('\n');
+        const linesBeforeCursor = value.substring(0, cursorPosition).split('\n');
+        const currentLineIndex = linesBeforeCursor.length - 1;
+        const currentColumn = linesBeforeCursor[currentLineIndex].length;
+        
+        if (currentLineIndex < allLines.length - 1) {
+          // We're not on the last line, move to next line
+          const currentLineLength = allLines[currentLineIndex].length;
+          const nextLineLength = allLines[currentLineIndex + 1].length;
+          const newColumn = Math.min(currentColumn, nextLineLength);
+          
+          // Calculate new cursor position
+          let newPosition = cursorPosition - currentLineLength + newColumn;
+          // Add 1 for the newline character we skipped
+          newPosition += 1;
+          setCursorPosition(newPosition);
+        } else {
+          // Already on last line, move to end
+          setCursorPosition(value.length);
+        }
       }
       return;
     }
 
     if (key.leftArrow) {
-      setCursorPosition(prev => Math.max(0, prev - 1));
+      if (key.ctrl) {
+        // Move to previous word boundary
+        let newPos = cursorPosition;
+        // Skip any whitespace to the left
+        while (newPos > 0 && /\s/.test(value[newPos - 1])) {
+          newPos--;
+        }
+        // Skip non-whitespace characters to find word start
+        while (newPos > 0 && !/\s/.test(value[newPos - 1])) {
+          newPos--;
+        }
+        setCursorPosition(newPos);
+      } else {
+        setCursorPosition(prev => Math.max(0, prev - 1));
+      }
       return;
     }
 
     if (key.rightArrow) {
-      setCursorPosition(prev => Math.min(value.length, prev + 1));
+      if (key.ctrl) {
+        // Move to next word boundary
+        let newPos = cursorPosition;
+        // Skip non-whitespace characters to the right
+        while (newPos < value.length && !/\s/.test(value[newPos])) {
+          newPos++;
+        }
+        // Skip any whitespace to find next word start
+        while (newPos < value.length && /\s/.test(value[newPos])) {
+          newPos++;
+        }
+        setCursorPosition(newPos);
+      } else {
+        setCursorPosition(prev => Math.min(value.length, prev + 1));
+      }
+      return;
+    }
+
+    if (key.home) {
+      // Move to beginning of line
+      setCursorPosition(0);
+      return;
+    }
+
+    if (key.end) {
+      // Move to end of line
+      setCursorPosition(value.length);
       return;
     }
 
@@ -134,6 +221,7 @@ export default function MessageInput({
 
     // Regular character input
     if (input && !key.meta && !key.ctrl) {
+      // Handle regular input (convert newlines to spaces for paste operations)
       const processedInput = input.replace(/[\r\n]+/g, ' ');
       const newValue = value.slice(0, cursorPosition) + processedInput + value.slice(cursorPosition);
       onChange(newValue);
@@ -143,8 +231,21 @@ export default function MessageInput({
     }
   });
 
-  const displayValue = value || placeholder;
   const isPlaceholder = !value;
+
+  // Calculate cursor position in multi-line text
+  const getCursorPositionInLines = () => {
+    if (isPlaceholder) return { line: 0, column: 0 };
+    
+    const textBeforeCursor = value.substring(0, cursorPosition);
+    const lines = textBeforeCursor.split('\n');
+    const lineIndex = lines.length - 1;
+    const columnIndex = lines[lineIndex].length;
+    
+    return { line: lineIndex, column: columnIndex };
+  };
+
+  const cursorPos = getCursorPositionInLines();
 
   return (
     <Box flexDirection="column">
@@ -157,13 +258,25 @@ export default function MessageInput({
               {placeholder}
             </Text>
           ) : (
-            <Text color="gray">
-              {value.slice(0, cursorPosition)}
-              <Text backgroundColor="cyan" color="white">
-                {cursorPosition < value.length ? value[cursorPosition] : ' '}
-              </Text>
-              {value.slice(cursorPosition + 1)}
-            </Text>
+            value.split('\n').map((line, lineIndex) => {
+              const isCurrentLine = lineIndex === cursorPos.line;
+              
+              if (!isCurrentLine) {
+                // Not the current line, just display it
+                return <Text color="gray" key={lineIndex}>{line}</Text>;
+              }
+              
+              // Current line, show cursor
+              return (
+                <Text color="gray" key={lineIndex}>
+                  {line.slice(0, cursorPos.column)}
+                  <Text backgroundColor="cyan" color="white">
+                    {cursorPos.column < line.length ? line[cursorPos.column] : ' '}
+                  </Text>
+                  {line.slice(cursorPos.column + 1)}
+                </Text>
+              );
+            })
           )}
         </Box>
       </Box>
