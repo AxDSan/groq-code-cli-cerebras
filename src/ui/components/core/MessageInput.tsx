@@ -22,6 +22,8 @@ export default function MessageInput({
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [draftMessage, setDraftMessage] = useState('');
   const [cursorPosition, setCursorPosition] = useState(value.length);
+  // Buffer for ESC (ANSI) sequences since some terminals split them
+  const [escBuffer, setEscBuffer] = useState('');
   
   const isSlashCommand = value.startsWith('/');
   const showSlashCommands = isSlashCommand;
@@ -89,7 +91,151 @@ export default function MessageInput({
   }, [value]);
 
   useInput((input, key) => {
-    // Normalize common Windows/xterm escape sequences first
+    // Helper: consume known escape sequences from a buffer
+    const tryHandleEscSeq = (buf: string): { handled: boolean; remainder: string } => {
+      // Map of exact sequences to handlers
+      const seqMap: Record<string, () => void> = {
+        // Ctrl+Left variants
+        '\u001b[1;5D': moveToPrevWord,
+        '\u001b[5D': moveToPrevWord,
+        // Ctrl+Right variants
+        '\u001b[1;5C': moveToNextWord,
+        '\u001b[5C': moveToNextWord,
+        // Home variants
+        '\u001b[H': moveLineStart,
+        '\u001b[1~': moveLineStart,
+        '\u001b[7~': moveLineStart,
+        '\u001bOH': moveLineStart,
+        // End variants
+        '\u001b[F': moveLineEnd,
+        '\u001b[4~': moveLineEnd,
+        '\u001b[8~': moveLineEnd,
+        '\u001bOF': moveLineEnd,
+        // Ctrl+Home/End (treat as Home/End navigation)
+        '\u001b[1;5H': moveLineStart,
+        '\u001b[1;5F': moveLineEnd,
+        // Delete variants
+        '\u001b[3~': () => {
+          if (cursorPosition < value.length) {
+            const newValue = value.slice(0, cursorPosition) + value.slice(cursorPosition + 1);
+            onChange(newValue);
+          }
+        },
+        // Ctrl+Delete
+        '\u001b[3;5~': () => deleteNextWord()
+      };
+
+      // If we have an exact match
+      if (seqMap[buf]) {
+        seqMap[buf]();
+        return { handled: true, remainder: '' };
+      }
+
+      // If current buffer is a prefix of any known sequence, wait for more input
+      const isPrefix = Object.keys(seqMap).some(seq => seq.startsWith(buf));
+      if (isPrefix) return { handled: false, remainder: buf };
+
+      // Not a known sequence or prefix; drop it
+      return { handled: false, remainder: '' };
+    };
+
+    // First, accumulate and parse escape sequences robustly
+    if (input.includes('\u001b')) {
+      const parts = input.split('\u001b');
+      // The first part may be plain text (before an ESC)
+      const leading = parts.shift()!;
+      if (leading) {
+        // Process any leading regular chars immediately
+        const processedInput = leading.replace(/[\r\n]+/g, ' ');
+        if (processedInput && !key.meta && !key.ctrl) {
+          const newValue = value.slice(0, cursorPosition) + processedInput + value.slice(cursorPosition);
+          onChange(newValue);
+          setCursorPosition(prev => prev + processedInput.length);
+          setSelectedCommandIndex(0);
+          setHistoryIndex(-1);
+        }
+      }
+
+      // Now handle each ESC-prefixed segment
+      let buffer = escBuffer;
+      for (const seg of parts) {
+        buffer += '\u001b' + seg;
+        const res = tryHandleEscSeq(buffer);
+        if (res.handled) {
+          buffer = '';
+        } else {
+          buffer = res.remainder;
+        }
+      }
+      setEscBuffer(buffer);
+      // We already consumed this input event
+      return;
+    }
+    // If we have a pending escape buffer, try to resolve it with this input
+    if (escBuffer) {
+      const res = ((): { handled: boolean; remainder: string } => {
+        // Try to see if appending current input finalizes any known sequence
+        const combined = escBuffer + input;
+        // Reuse same logic as above
+        const seqs = [
+          '\u001b[1;5D','\u001b[5D','\u001b[1;5C','\u001b[5C',
+          '\u001b[H','\u001b[1~','\u001b[7~','\u001bOH',
+          '\u001b[F','\u001b[4~','\u001b[8~','\u001bOF',
+          '\u001b[1;5H','\u001b[1;5F','\u001b[3~','\u001b[3;5~'
+        ];
+        if (seqs.some(s => s === combined)) return { handled: true, remainder: '' };
+        if (seqs.some(s => s.startsWith(combined))) return { handled: false, remainder: combined };
+        return { handled: false, remainder: '' };
+      })();
+      if (res.handled) {
+        // Force re-run by simulating that buffer contained a full sequence
+        const full = escBuffer + input;
+        setEscBuffer('');
+        // Manually invoke handling path by calling useInput body again would be improper;
+        // Instead, set buffer and return; next keystroke isn't guaranteed. So do a minimal direct handle:
+        switch (full) {
+          case '\u001b[1;5D':
+          case '\u001b[5D':
+            moveToPrevWord();
+            break;
+          case '\u001b[1;5C':
+          case '\u001b[5C':
+            moveToNextWord();
+            break;
+          case '\u001b[H':
+          case '\u001b[1~':
+          case '\u001b[7~':
+          case '\u001bOH':
+          case '\u001b[1;5H':
+            moveLineStart();
+            break;
+          case '\u001b[F':
+          case '\u001b[4~':
+          case '\u001b[8~':
+          case '\u001bOF':
+          case '\u001b[1;5F':
+            moveLineEnd();
+            break;
+          case '\u001b[3~':
+            if (cursorPosition < value.length) {
+              const newValue = value.slice(0, cursorPosition) + value.slice(cursorPosition + 1);
+              onChange(newValue);
+            }
+            break;
+          case '\u001b[3;5~':
+            deleteNextWord();
+            break;
+        }
+        return;
+      }
+      // If still a possible prefix, keep buffering and return
+      if (res.remainder) {
+        setEscBuffer(res.remainder);
+        return;
+      }
+      // Otherwise clear buffer and continue processing
+      setEscBuffer('');
+    }
     // Ctrl+Left: ESC[1;5D or ESC[5D
     if (input === '\u001b[1;5D' || input === '\u001b[5D') {
       moveToPrevWord();
@@ -108,11 +254,6 @@ export default function MessageInput({
     // End: ESC[F or ESC[4~ or ESCOF
     if (input === '\u001b[F' || input === '\u001b[4~' || input === '\u001bOF') {
       moveLineEnd();
-      return;
-    }
-    // Ctrl+Delete: ESC[3;5~
-    if (input === '\u001b[3;5~') {
-      deleteNextWord();
       return;
     }
 
@@ -230,6 +371,17 @@ export default function MessageInput({
       return;
     }
 
+    // Also try to support Home/End via potential runtime key flags (untyped)
+    const anyKey = key as any;
+    if (anyKey.home) {
+      moveLineStart();
+      return;
+    }
+    if (anyKey.end) {
+      moveLineEnd();
+      return;
+    }
+
     if (key.leftArrow) {
       if (key.ctrl) {
         moveToPrevWord();
@@ -264,6 +416,20 @@ export default function MessageInput({
         const newValue = value.slice(0, cursorPosition) + value.slice(cursorPosition + textToDelete.length);
         onChange(newValue);
       }
+      return;
+    }
+
+    // Ctrl+Backspace often sends ASCII 0x17 (Ctrl+W). Treat that as delete previous word.
+    if (input === '\u0017') {
+      // Delete previous word
+      let startPos = cursorPosition;
+      while (startPos > 0 && /\s/.test(value[startPos - 1])) startPos--;
+      while (startPos > 0 && !/\s/.test(value[startPos - 1])) startPos--;
+      const newValue = value.slice(0, startPos) + value.slice(cursorPosition);
+      onChange(newValue);
+      setCursorPosition(startPos);
+      setSelectedCommandIndex(0);
+      setHistoryIndex(-1);
       return;
     }
 
