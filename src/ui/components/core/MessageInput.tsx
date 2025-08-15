@@ -112,15 +112,17 @@ export default function MessageInput({
           const parts = body.length ? body.split(';') : [];
           const nums = parts.map(p => parseInt(p, 10)).filter(n => !Number.isNaN(n));
           const modifier = nums.length >= 2 ? nums[1] : (nums.length === 1 && (final === 'C' || final === 'D' || final === 'H' || final === 'F') ? 1 : 0);
-          const isCtrl = modifier === 5; // 5 = Ctrl, 3 = Alt, 2 = Shift
-          const isAlt = modifier === 3;
+          // Treat Ctrl-like modifiers (Ctrl=5, Ctrl+Shift=6, Ctrl+Alt=7, Ctrl+Alt+Shift=8) as word-navigation modifiers
+          const isCtrlLike = modifier === 5 || modifier === 6 || modifier === 7 || modifier === 8;
+          // Treat Alt-like modifiers (Alt=3, Alt+Shift=4, Ctrl+Alt=7, Ctrl+Alt+Shift=8) as word-navigation modifiers too
+          const isAltLike = modifier === 3 || modifier === 4 || modifier === 7 || modifier === 8;
 
           switch (final) {
             case 'C': // Right
-              if (isCtrl || isAlt) moveToNextWord(); else setCursorPosition(prev => Math.min(value.length, prev + 1));
+              if (isCtrlLike || isAltLike) moveToNextWord(); else setCursorPosition(prev => Math.min(value.length, prev + 1));
               break;
             case 'D': // Left
-              if (isCtrl || isAlt) moveToPrevWord(); else setCursorPosition(prev => Math.max(0, prev - 1));
+              if (isCtrlLike || isAltLike) moveToPrevWord(); else setCursorPosition(prev => Math.max(0, prev - 1));
               break;
             case 'H': // Home
               moveLineStart();
@@ -562,7 +564,7 @@ export default function MessageInput({
     }
 
     // Ctrl+Backspace often sends ASCII 0x17 (Ctrl+W). Treat that as delete previous word.
-    if (input === '\u0017') {
+    if (input === '\u0017' || input === '\u001b\u007f' || input === '\u007f') {
       // Delete previous word
       let startPos = cursorPosition;
       while (startPos > 0 && /\s/.test(value[startPos - 1])) startPos--;
