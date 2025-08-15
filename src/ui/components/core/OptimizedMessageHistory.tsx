@@ -1,8 +1,8 @@
-import React, { useEffect, useRef, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { ChatMessage } from '../../hooks/useAgent.js';
 import ToolHistoryItem from '../display/ToolHistoryItem.js';
-import { parseMarkdown, MarkdownElement, parseInlineElements } from '../../../utils/markdown.js';
+import { parseMarkdown, parseInlineElements } from '../../../utils/markdown.js';
 
 interface OptimizedMessageHistoryProps {
   messages: ChatMessage[];
@@ -17,20 +17,10 @@ const MemoizedMessage = React.memo(({
   message: ChatMessage; 
   showReasoning: boolean;
 }) => {
-  const formatTimestamp = (date: Date) => {
-    return date.toLocaleTimeString('en-US', { 
-      hour12: false, 
-      hour: '2-digit', 
-      minute: '2-digit' 
-    });
-  };
-
-  const timestamp = formatTimestamp(message.timestamp);
-  
   switch (message.role) {
     case 'user':
       return (
-        <Box key={message.id} marginBottom={1}>
+        <Box marginBottom={1}>
           <Text color="cyan" bold>{'>'} </Text>
           <Text color="gray">{message.content}</Text>
         </Box>
@@ -41,7 +31,7 @@ const MemoizedMessage = React.memo(({
       const markdownElements = useMemo(() => parseMarkdown(message.content), [message.content]);
       
       return (
-        <Box key={message.id} marginBottom={1} flexDirection="column">
+        <Box marginBottom={1} flexDirection="column">
           {/* Render reasoning if present and showReasoning is enabled */}
           {message.reasoning && showReasoning && (
             <Box marginBottom={1}>
@@ -92,7 +82,7 @@ const MemoizedMessage = React.memo(({
       
     case 'system':
       return (
-        <Box key={message.id} marginBottom={1}>
+        <Box marginBottom={1}>
           <Text color="yellow" italic>
             {message.content}
           </Text>
@@ -102,20 +92,20 @@ const MemoizedMessage = React.memo(({
     case 'tool_execution':
       if (message.toolExecution) {
         return (
-          <Box key={message.id} marginBottom={1}>
+          <Box marginBottom={1}>
             <ToolHistoryItem execution={message.toolExecution} />
           </Box>
         );
       }
       return (
-        <Box key={message.id} marginBottom={1}>
+        <Box marginBottom={1}>
           <Text color="blue">Tool: {message.content}</Text>
         </Box>
       );
       
     default:
       return (
-        <Box key={message.id} marginBottom={1}>
+        <Box marginBottom={1}>
           <Text color="gray" dimColor>
             Unknown: {message.content}
           </Text>
@@ -125,48 +115,11 @@ const MemoizedMessage = React.memo(({
 });
 
 export default function OptimizedMessageHistory({ messages, showReasoning = true }: OptimizedMessageHistoryProps) {
-  const scrollRef = useRef<any>(null);
-  const previousMessageCount = useRef(messages.length);
-  const isAutoScrolling = useRef(false);
-
-  // Optimized auto-scroll that only triggers when new messages are added
-  useEffect(() => {
-    if (scrollRef.current && messages.length > previousMessageCount.current) {
-      // Use a small delay to ensure DOM is updated before scrolling
-      const timer = setTimeout(() => {
-        isAutoScrolling.current = true;
-        scrollRef.current.scrollToBottom?.();
-        // Reset flag after a short delay to allow manual scrolling
-        setTimeout(() => {
-          isAutoScrolling.current = false;
-        }, 100);
-      }, 0);
-      
-      previousMessageCount.current = messages.length;
-      return () => clearTimeout(timer);
-    }
-  }, [messages.length]);
-
-  // Handle manual scrolling to prevent auto-scroll from overriding user interaction
-  useEffect(() => {
-    const handleUserScroll = () => {
-      if (!isAutoScrolling.current) {
-        // User is manually scrolling, so don't auto-scroll until they reach bottom
-      }
-    };
-
-    const container = scrollRef.current;
-    if (container) {
-      container.addEventListener('scroll', handleUserScroll);
-      return () => container.removeEventListener('scroll', handleUserScroll);
-    }
-  }, []);
-
   // Memoize the rendered messages to prevent unnecessary re-renders
   const renderedMessages = useMemo(() => {
-    return messages.map(message => (
+    return messages.map((message, index) => (
       <MemoizedMessage 
-        key={message.id} 
+        key={`${message.id}-${index}`}
         message={message} 
         showReasoning={showReasoning} 
       />
@@ -174,7 +127,7 @@ export default function OptimizedMessageHistory({ messages, showReasoning = true
   }, [messages, showReasoning]);
 
   return (
-    <Box ref={scrollRef} flexDirection="column" flexGrow={1}>
+    <Box flexDirection="column" flexGrow={1}>
       {messages.length === 0 ? (
         <Box justifyContent="center" paddingY={2} flexDirection="column" alignItems="center">
           <Text color="gray" dimColor italic>
